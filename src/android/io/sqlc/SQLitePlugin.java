@@ -239,39 +239,6 @@ public class SQLitePlugin extends CordovaPlugin {
             this.cordova.getThreadPool().execute(r);
         }
     }
-    /**
-     * Open a database.
-     *
-     * @param dbName   The name of the database file
-     */
-    private SQLiteNativeDatabase openDatabase(String dbname, boolean ignored, CallbackContext cbc, boolean old_impl, int dbid) throws Exception {
-        try {
-            // ASSUMPTION: no db (connection/handle) is already stored in the map
-            // [should be true according to the code in DBRunner.run()]
-
-            File dbfile = this.cordova.getActivity().getDatabasePath(dbname);
-
-            if (!dbfile.exists()) {
-                dbfile.getParentFile().mkdirs();
-            }
-
-            Log.v("info", "Open sqlite db: " + dbfile.getAbsolutePath());
-
-            SQLiteNativeDatabase mydb = new SQLiteNativeDatabase();
-            mydb.open(dbfile);
-
-            // Indicate Android version with flat JSON interface
-            JSONObject a1 = new JSONObject();
-            a1.put("dbid", dbid);
-            cbc.success(a1);
-
-            return mydb;
-        } catch (Exception e) {
-            if (cbc != null) // XXX Android locking/closing BUG workaround
-                cbc.error("can't open database " + e);
-            throw e;
-        }
-    }
 
     private SQLiteAndroidDatabase openDatabase2(String dbname, boolean ignored, CallbackContext cbc, boolean old_impl) throws Exception {
         try {
@@ -378,60 +345,6 @@ public class SQLitePlugin extends CordovaPlugin {
         }
     }
 
-    static boolean isNativeLibLoaded = false;
-
-    class SQLiteNativeDatabase extends SQLiteAndroidDatabase {
-        long mydbhandle;
-
-        /**
-         * Open a database.
-         *
-         * @param dbFile   The database File specification
-         */
-        @Override
-        void open(File dbFile) throws Exception {
-            if (!isNativeLibLoaded) {
-                System.loadLibrary("sqlc-evplus-ndk-driver");
-                isNativeLibLoaded = true;
-            }
-
-            long mydboc = EVNDKDriver.sqlc_new_ev_dboc();
-            mydbhandle = EVNDKDriver.sqlc_ev_db_open(mydboc,
-              dbFile.getAbsolutePath(),
-              EVNDKDriver.SQLC_OPEN_READWRITE | EVNDKDriver.SQLC_OPEN_CREATE);
-            int openResult = EVNDKDriver.sqlc_ev_db_open_result(mydboc);
-            EVNDKDriver.sqlc_ev_dboc_finalize(mydboc);
-            if (mydbhandle == EVNDKDriver.SQLC_NULL_HANDLE) throw new SQLException("open error", "failed", openResult);
-        }
-
-        /**
-         * Close a database (in the current thread).
-         */
-        @Override
-        void closeDatabaseNow() {
-            try {
-                if (mydbhandle != EVNDKDriver.SQLC_NULL_HANDLE) EVNDKDriver.sqlc_db_close(mydbhandle);
-            } catch (Exception e) {
-                Log.e(SQLitePlugin.class.getSimpleName(), "couldn't close database, ignoring", e);
-            }
-        }
-
-        /**
-         * Ignore Android bug workaround for native version
-         */
-        @Override
-        void bugWorkaround() { }
-
-        /* ** NOT USED in this plugin version:
-        String flatBatchJSON(String batch_json, int ll) {
-            long ch = EVNDKDriver.sqlc_evcore_db_new_qc(mydbhandle);
-            String jr = EVNDKDriver.sqlc_evcore_qc_execute(ch, batch_json, ll);
-            EVNDKDriver.sqlc_evcore_qc_finalize(ch);
-            return jr;
-        }
-        // ** */
-    }
-
     private class DBRunner implements Runnable {
         final int dbid;
         final String dbname;
@@ -442,7 +355,6 @@ public class SQLitePlugin extends CordovaPlugin {
         final BlockingQueue<DBQuery> q;
         final CallbackContext openCbc;
 
-        SQLiteNativeDatabase mydb1;
         SQLiteAndroidDatabase mydb;
 
         DBRunner(final String dbname, JSONObject options, CallbackContext cbc, int dbid) {
@@ -460,10 +372,7 @@ public class SQLitePlugin extends CordovaPlugin {
 
         public void run() {
             try {
-                if (!oldImpl)
-                    this.mydb = this.mydb1 = openDatabase(dbname, false, this.openCbc, this.oldImpl, this.dbid);
-                else
-                    this.mydb = openDatabase2(dbname, false, this.openCbc, this.oldImpl);
+                this.mydb = openDatabase2(dbname, false, this.openCbc, this.oldImpl);
             } catch (Exception e) {
                 Log.e(SQLitePlugin.class.getSimpleName(), "unexpected error, stopping db thread", e);
                 dbrmap.remove(dbname);
@@ -479,31 +388,6 @@ public class SQLitePlugin extends CordovaPlugin {
                 while (!dbq.stop) {
                     if (oldImpl) {
                         mydb.executeSqlBatch(dbq.queries, dbq.jsonparams, dbq.cbc);
-                    } else {
-                        final long qc = EVNDKDriver.sqlc_evplus_db_new_qc(mydb1.mydbhandle);
-
-                        final String jr1 = EVNDKDriver.sqlc_evplus_qc_execute(qc, dbq.fj);
-                        final boolean multi = jr1.charAt(2) == 'm';
-                        final PluginResult pr1 = new MyPluginResult(jr1);
-                        if (multi) {
-                            pr1.setKeepCallback(true);
-                        }
-                        dbq.cbc.sendPluginResult(pr1);
-
-                        boolean more = multi;
-
-                        while (more) {
-                            final String jr2 = EVNDKDriver.sqlc_evplus_qc_execute(qc, "");
-                            more = jr2.charAt(1) != 'n';
-                            final PluginResult pr2 = new MyPluginResult(jr2);
-                            if (more) {
-                                pr2.setKeepCallback(true);
-                            }
-                            dbq.cbc.sendPluginResult(pr2);
-                        }
-
-                        // cleanup:
-                        EVNDKDriver.sqlc_evplus_qc_finalize(qc);
                     }
 
                     if (this.oldImpl && this.bugWorkaround && dbq.queries.length == 1 && dbq.queries[0] == "COMMIT")
