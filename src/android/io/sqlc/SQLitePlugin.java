@@ -348,8 +348,6 @@ public class SQLitePlugin extends CordovaPlugin {
     private class DBRunner implements Runnable {
         final int dbid;
         final String dbname;
-        // expose oldImpl:
-        boolean oldImpl;
         private boolean bugWorkaround;
 
         final BlockingQueue<DBQuery> q;
@@ -360,9 +358,8 @@ public class SQLitePlugin extends CordovaPlugin {
         DBRunner(final String dbname, JSONObject options, CallbackContext cbc, int dbid) {
             this.dbid = dbid;
             this.dbname = dbname;
-            this.oldImpl = options.has("androidOldDatabaseImplementation");
             Log.v(SQLitePlugin.class.getSimpleName(), "Android db implementation: built-in android.database.sqlite package");
-            this.bugWorkaround = this.oldImpl && options.has("androidBugWorkaround");
+            this.bugWorkaround = options.has("androidBugWorkaround");
             if (this.bugWorkaround)
                 Log.v(SQLitePlugin.class.getSimpleName(), "Android db closing/locking workaround applied");
 
@@ -372,7 +369,7 @@ public class SQLitePlugin extends CordovaPlugin {
 
         public void run() {
             try {
-                this.mydb = openDatabase2(dbname, false, this.openCbc, this.oldImpl);
+                this.mydb = openDatabase2(dbname, false, this.openCbc, true);
             } catch (Exception e) {
                 Log.e(SQLitePlugin.class.getSimpleName(), "unexpected error, stopping db thread", e);
                 dbrmap.remove(dbname);
@@ -386,11 +383,9 @@ public class SQLitePlugin extends CordovaPlugin {
                 dbq = q.take();
 
                 while (!dbq.stop) {
-                    if (oldImpl) {
-                        mydb.executeSqlBatch(dbq.queries, dbq.jsonparams, dbq.cbc);
-                    }
+                    mydb.executeSqlBatch(dbq.queries, dbq.jsonparams, dbq.cbc);
 
-                    if (this.oldImpl && this.bugWorkaround && dbq.queries.length == 1 && dbq.queries[0] == "COMMIT")
+                    if (this.bugWorkaround && dbq.queries.length == 1 && dbq.queries[0] == "COMMIT")
                         mydb.bugWorkaround();
 
                     dbq = q.take();
